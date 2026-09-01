@@ -2,69 +2,71 @@
 
 #include <limits>
 #include <algorithm>
+#include <utility>
 
-// ============================================================================
-//  Static helpers
-// ============================================================================
-
-void CWeldingCompany::setMinCost(
-    std::unordered_map<unsigned, std::unordered_map<unsigned, double>>& dp,
-    const unsigned w, const unsigned h, const double cost){
-    auto& row = dp[w];
-    if (const auto it = row.find(h); it == row.end() || cost < it->second)
-        row[h] = cost;
-}
-
-double CWeldingCompany::mySolve(
-    std::unordered_map<unsigned, std::unordered_map<unsigned, double>>& dp,
-    const unsigned w, const unsigned h, const double weldingStrength){
-    // Base case: exact panel available
-    if (auto wi = dp.find(w); wi != dp.end())
-        if (auto hi = wi->second.find(h); hi != wi->second.end())
-            return hi->second;
-
-    double minCost = std::numeric_limits<double>::max();
-
-    // Horizontal splits (constant height, varying width)
-    for (unsigned xSplit = 1; xSplit <= w / 2; ++xSplit){
-        const double lc = mySolve(dp, xSplit, h, weldingStrength);
-        const double rc = mySolve(dp, w - xSplit, h, weldingStrength);
-        if (lc < std::numeric_limits<double>::max() &&
-            rc < std::numeric_limits<double>::max()){
-            minCost = std::min(minCost, lc + rc + h * weldingStrength);
-        }
-    }
-
-    // Vertical splits (constant width, varying height)
-    for (unsigned ySplit = 1; ySplit <= h / 2; ++ySplit){
-        const double tc = mySolve(dp, w, ySplit, weldingStrength);
-        const double bc = mySolve(dp, w, h - ySplit, weldingStrength);
-        if (tc < std::numeric_limits<double>::max() &&
-            bc < std::numeric_limits<double>::max()){
-            minCost = std::min(minCost, tc + bc + w * weldingStrength);
-        }
-    }
-
-    // Cache result (even if no solution found — avoids re-exploration)
-    setMinCost(dp, w, h, minCost);
-    return minCost;
+namespace {
+constexpr double kImpossible = std::numeric_limits<double>::max();
 }
 
 // ============================================================================
-//  Sequential solver (public)
+//  DP solver
 // ============================================================================
+
+std::uint64_t CWeldingCompany::shapeKey(const unsigned w, const unsigned h){
+    // Normalised so that a WxH panel and an HxW panel hash to one entry.
+    const unsigned lo = w < h ? w : h;
+    const unsigned hi = w < h ? h : w;
+    return (static_cast<std::uint64_t>(lo) << 32) | hi;
+}
+
+double CWeldingCompany::mySolve(DPCache& cache, unsigned w, unsigned h){
+    if (w > h) std::swap(w, h);                 // rotations are equivalent
+    const std::uint64_t key = shapeKey(w, h);
+
+    if (const auto it = cache.solved.find(key); it != cache.solved.end())
+        return it->second;
+
+    // A catalogue entry is the opening bid, not the answer: welding the same
+    // size out of cheaper pieces may still beat buying it outright.
+    double best = kImpossible;
+    if (const auto it = cache.direct.find(key); it != cache.direct.end())
+        best = it->second;
+
+    // Horizontal splits: cut across the width, seam runs the full height.
+    for (unsigned x = 1; x <= w / 2; ++x){
+        const double lc = mySolve(cache, x, h);
+        const double rc = mySolve(cache, w - x, h);
+        if (lc < kImpossible && rc < kImpossible)
+            best = std::min(best, lc + rc + h * cache.weld);
+    }
+
+    // Vertical splits: cut across the height, seam runs the full width.
+    for (unsigned y = 1; y <= h / 2; ++y){
+        const double tc = mySolve(cache, w, y);
+        const double bc = mySolve(cache, w, h - y);
+        if (tc < kImpossible && bc < kImpossible)
+            best = std::min(best, tc + bc + w * cache.weld);
+    }
+
+    // Cached even when impossible, so the subtree is never re-explored.
+    cache.solved.emplace(key, best);
+    return best;
+}
 
 void CWeldingCompany::seqSolve(APriceList priceList, COrder& order){
-    // dp[w][h] = cheapest known price for a panel of size w×h
-    std::unordered_map<unsigned, std::unordered_map<unsigned, double>> dp;
+    DPCache cache;
+    cache.weld = order.m_WeldingStrength;
 
-    for (const auto& prod : priceList->m_List){
-        setMinCost(dp, prod.m_W, prod.m_H, prod.m_Cost);
-        if (prod.m_W != prod.m_H) // non-square: both orientations
-            setMinCost(dp, prod.m_H, prod.m_W, prod.m_Cost);
+    if (priceList){
+        for (const auto& prod : priceList->m_List){
+            const std::uint64_t key = shapeKey(prod.m_W, prod.m_H);
+            const auto it = cache.direct.find(key);
+            if (it == cache.direct.end() || prod.m_Cost < it->second)
+                cache.direct[key] = prod.m_Cost;
+        }
     }
 
-    order.m_Cost = mySolve(dp, order.m_W, order.m_H, order.m_WeldingStrength);
+    order.m_Cost = mySolve(cache, order.m_W, order.m_H);
 }
 
 // ============================================================================
@@ -84,31 +86,26 @@ void CWeldingCompany::addCustomer(ACustomer cust){
 // ============================================================================
 
 void CWeldingCompany::addPriceList(AProducer /*prod*/, const APriceList& priceList){
+    if (!priceList) return;
     const unsigned mid = priceList->m_MaterialID;
 
     {
         std::lock_guard lg(m_priceListsMtx);
 
-        auto it = m_materialPriceLists.find(mid);
-        if (it == m_materialPriceLists.end()){
-            m_materialPriceLists[mid] = priceList;
-        } else{
-            // Merge: keep the cheapest price per panel shape
-            for (const auto& newProd : priceList->m_List){
-                bool found = false;
-                for (auto& existing : it->second->m_List){
-                    bool sameShape =
-                        (newProd.m_W == existing.m_W && newProd.m_H == existing.m_H) ||
-                        (newProd.m_W == existing.m_H && newProd.m_H == existing.m_W);
-                    if (sameShape){
-                        if (newProd.m_Cost < existing.m_Cost)
-                            existing.m_Cost = newProd.m_Cost;
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found)
-                    it->second->add(newProd);
+        // We copy into a catalogue we own: the producer keeps its own object,
+        // and nothing we hand to the solver can be mutated behind its back.
+        auto& own = m_materialPriceLists[mid];
+        if (!own) own = std::make_shared<CPriceList>(mid);
+        auto& index = m_shapeIndex[mid];
+
+        for (const auto& incoming : priceList->m_List){
+            const std::uint64_t key = shapeKey(incoming.m_W, incoming.m_H);
+            const auto it = index.find(key);
+            if (it == index.end()){
+                index.emplace(key, own->m_List.size());
+                own->add(incoming);
+            } else if (incoming.m_Cost < own->m_List[it->second].m_Cost){
+                own->m_List[it->second].m_Cost = incoming.m_Cost;
             }
         }
     }
@@ -116,14 +113,17 @@ void CWeldingCompany::addPriceList(AProducer /*prod*/, const APriceList& priceLi
     {
         std::lock_guard lg(m_matProdCountMtx);
         ++m_materialProducerCount[mid];
-        m_cv_matProdCount.notify_all();
     }
-    m_cv_priceLists.notify_all();
+    m_cv_matProdCount.notify_all();
 }
 
 // ============================================================================
 //  Life-cycle
 // ============================================================================
+
+CWeldingCompany::~CWeldingCompany(){
+    stop();
+}
 
 void CWeldingCompany::start(unsigned thrCount){
     for (unsigned i = 0; i < thrCount; ++i)
@@ -134,25 +134,27 @@ void CWeldingCompany::start(unsigned thrCount){
 }
 
 void CWeldingCompany::stop(){
-    // Wait for all serving threads (customers) to finish
+    // 1. Serving threads first: once they are gone, no new work can arrive.
     for (auto& t : m_servingThreads)
-        t.join();
+        if (t.joinable()) t.join();
+    m_servingThreads.clear();
 
-    // Signal workers: no more work will arrive
+    // 2. Tell the workers no more work is coming.
     {
         std::lock_guard lg(m_orderQueueMtx);
         m_stopped = true;
-        m_cv_orderQueue.notify_all();
     }
+    m_cv_orderQueue.notify_all();
 
-    // Wait until every in-flight order has been processed
+    // 3. Wait until every order already taken off the queue is finished.
     {
-        std::unique_lock ul(m_activeOrdersMtx);
+        std::unique_lock ul(m_orderQueueMtx);
         m_cv_activeOrders.wait(ul, [this]{ return m_activeOrders == 0; });
     }
 
     for (auto& t : m_workingThreads)
-        t.join();
+        if (t.joinable()) t.join();
+    m_workingThreads.clear();
 }
 
 // ============================================================================
@@ -165,21 +167,24 @@ void CWeldingCompany::servingThrFun(const ACustomer& cust){
         if (!orderList) break;
 
         const auto total = static_cast<unsigned>(orderList->m_List.size());
-        auto* counter = new std::atomic<unsigned>(0);
+
+        // An empty batch has no slot to trigger the callback, so answer here
+        // or the customer waits forever.
+        if (total == 0){
+            cust->completed(orderList);
+            continue;
+        }
+
+        auto counter = std::make_shared<std::atomic<unsigned>>(0);
 
         for (unsigned i = 0; i < total; ++i){
-            std::unique_lock ul(m_orderQueueMtx);
-            m_cv_queueRoom.wait(ul,
-                                [this]{ return m_orderQueue.size() < kMaxQueueSize; });
-
-            m_orderQueue.push(OrderSlot{cust, orderList, i, total, counter});
+            m_queueRoom.acquire();   // blocks while the queue is full
 
             {
-                std::lock_guard lg(m_activeOrdersMtx);
+                std::lock_guard lg(m_orderQueueMtx);
+                m_orderQueue.push(OrderSlot{cust, orderList, i, total, counter});
                 ++m_activeOrders;
             }
-
-            ul.unlock();
             m_cv_orderQueue.notify_one();
         }
     }
@@ -191,23 +196,23 @@ void CWeldingCompany::workingThrFun(){
         {
             std::unique_lock ul(m_orderQueueMtx);
             m_cv_orderQueue.wait(ul,
-                                 [this]{ return !m_orderQueue.empty() || m_stopped.load(); });
+                                 [this]{ return !m_orderQueue.empty() || m_stopped; });
 
-            if (m_stopped && m_orderQueue.empty()) break;
-            if (m_orderQueue.empty()) continue;
+            // Empty here implies m_stopped: drain first, exit second.
+            if (m_orderQueue.empty()) break;
 
-            slot = m_orderQueue.front();
+            slot = std::move(m_orderQueue.front());
             m_orderQueue.pop();
-            m_cv_queueRoom.notify_one();
         }
+        m_queueRoom.release();       // one slot freed
 
         fulfillOrder(slot);
 
         {
-            std::lock_guard lg(m_activeOrdersMtx);
+            std::lock_guard lg(m_orderQueueMtx);
             --m_activeOrders;
         }
-        m_cv_activeOrders.notify_one();
+        m_cv_activeOrders.notify_all();
     }
 }
 
@@ -218,20 +223,20 @@ void CWeldingCompany::workingThrFun(){
 void CWeldingCompany::waitForMaterialPriceList(unsigned materialID){
     std::unique_lock ul(m_matProdCountMtx);
 
-    if (m_materialProducerCount.find(materialID) == m_materialProducerCount.end()){
-        m_materialProducerCount[materialID] = 0;
+    // insert() tells us whether we are the first to ask.  This is tracked
+    // separately from the reply counter on purpose: a producer may push a
+    // price list nobody asked for, and that must not be mistaken for "the
+    // request has already gone out".
+    if (m_requestedMaterials.insert(materialID).second){
+        // Unlock first - a synchronous producer calls addPriceList() from
+        // inside sendPriceList(), which takes this very mutex.
         ul.unlock();
-
-        {
-            std::lock_guard lg(m_prodMtx);
-            for (const auto& p : m_producers)
-                p->sendPriceList(materialID);
-        }
-
+        for (const auto& p : m_producers)
+            p->sendPriceList(materialID);
         ul.lock();
     }
 
-    const unsigned expected = static_cast<unsigned>(m_producers.size());
+    const auto expected = static_cast<unsigned>(m_producers.size());
     m_cv_matProdCount.wait(ul,
                            [&]{ return m_materialProducerCount[materialID] >= expected; });
 }
@@ -241,18 +246,24 @@ void CWeldingCompany::waitForMaterialPriceList(unsigned materialID){
 // ============================================================================
 
 void CWeldingCompany::fulfillOrder(const OrderSlot& slot){
-    waitForMaterialPriceList(slot.orderList->m_MaterialID);
+    const unsigned mid = slot.orderList->m_MaterialID;
+    waitForMaterialPriceList(mid);
 
-    APriceList pl;
+    // Snapshot under the lock: a late price list must not resize the vector
+    // while the solver is walking it.
+    APriceList snapshot;
     {
         std::lock_guard lg(m_priceListsMtx);
-        pl = m_materialPriceLists.at(slot.orderList->m_MaterialID);
+        if (const auto it = m_materialPriceLists.find(mid); it != m_materialPriceLists.end())
+            snapshot = std::make_shared<CPriceList>(*it->second);
     }
 
-    seqSolve(pl, slot.orderList->m_List[slot.orderIndex]);
+    COrder& order = slot.orderList->m_List[slot.orderIndex];
+    if (snapshot)
+        seqSolve(snapshot, order);
+    else
+        order.m_Cost = kImpossible;   // no producer supplies this material
 
-    if (++(*slot.completedOrders) == slot.totalOrders){
+    if (++(*slot.completedOrders) == slot.totalOrders)
         slot.customer->completed(slot.orderList);
-        delete slot.completedOrders;
-    }
 }

@@ -8,14 +8,12 @@
  *   ./run_tests
  */
 
-#include <cassert>
 #include <cmath>
 #include <iostream>
 #include <sstream>
 #include <functional>
 #include <atomic>
 #include <chrono>
-#include <thread>
 
 #include "../include/CWeldingCompany.h"
 #include "../common.h"
@@ -24,25 +22,23 @@
 //  Tiny test framework
 // ============================================================================
 
-namespace {
+namespace{
+    int g_total = 0;
+    int g_passed = 0;
 
-int  g_total  = 0;
-int  g_passed = 0;
-
-void check(bool cond, const char *desc) {
-    ++g_total;
-    if (cond) {
-        ++g_passed;
-        std::cout << "  [PASS] " << desc << "\n";
-    } else {
-        std::cout << "  [FAIL] " << desc << "\n";
+    void check(bool cond, const char* desc){
+        ++g_total;
+        if (cond){
+            ++g_passed;
+            std::cout << "  [PASS] " << desc << "\n";
+        } else{
+            std::cout << "  [FAIL] " << desc << "\n";
+        }
     }
-}
 
-void section(const char *title) {
-    std::cout << "\n=== " << title << " ===\n";
-}
-
+    void section(const char* title){
+        std::cout << "\n=== " << title << " ===\n";
+    }
 } // namespace
 
 // ============================================================================
@@ -50,20 +46,20 @@ void section(const char *title) {
 // ============================================================================
 
 /** Synchronous producer: responds immediately when sendPriceList() is called. */
-class SyncProducer : public CProducer {
+class SyncProducer : public CProducer{
 public:
     explicit SyncProducer(
         std::function<void(AProducer, APriceList)> recv,
         std::vector<CProd> products,
         unsigned materialID)
         : m_recv(std::move(recv))
-        , m_products(std::move(products))
-        , m_materialID(materialID) {}
+          , m_products(std::move(products))
+          , m_materialID(materialID){}
 
-    void sendPriceList(unsigned materialID) override {
+    void sendPriceList(unsigned materialID) override{
         if (materialID != m_materialID) return;
         auto pl = std::make_shared<CPriceList>(materialID);
-        for (const auto &p : m_products) pl->add(p);
+        for (const auto& p : m_products) pl->add(p);
         m_recv(shared_from_this(), pl);
     }
 
@@ -74,30 +70,30 @@ private:
 };
 
 /** One-shot customer: sends exactly one order list, then signals done. */
-class OneShotCustomer : public CCustomer {
+class OneShotCustomer : public CCustomer{
 public:
     explicit OneShotCustomer(AOrderList orders)
-        : m_orders(std::move(orders)), m_served(false) {}
+        : m_orders(std::move(orders)), m_served(false){}
 
-    AOrderList waitForDemand() override {
+    AOrderList waitForDemand() override{
         if (m_served) return nullptr;
         m_served = true;
         return m_orders;
     }
 
-    void completed(AOrderList x) override {
+    void completed(AOrderList x) override{
         m_result = x;
-        m_done   = true;
+        m_done = true;
     }
 
-    AOrderList result() const { return m_result; }
-    bool       done()   const { return m_done.load(); }
+    AOrderList result() const{ return m_result; }
+    bool done() const{ return m_done.load(); }
 
 private:
-    AOrderList          m_orders;
-    bool                m_served;
-    AOrderList          m_result;
-    std::atomic<bool>   m_done { false };
+    AOrderList m_orders;
+    bool m_served;
+    AOrderList m_result;
+    std::atomic<bool> m_done{false};
 };
 
 // ============================================================================
@@ -105,17 +101,17 @@ private:
 // ============================================================================
 
 static constexpr double EPS = 1e-6;
-static bool approxEq(double a, double b) { return std::fabs(a - b) < EPS; }
+static bool approxEq(double a, double b){ return std::fabs(a - b) < EPS; }
 
 // ============================================================================
 //  Test 1 – seqSolve: exact panel match
 // ============================================================================
 
-void test_seqSolve_exact_match() {
+void test_seqSolve_exact_match(){
     section("seqSolve – exact panel match");
 
     auto pl = std::make_shared<CPriceList>(0);
-    pl->add(CProd{4, 3, 10.0});   // 4×3 panel, cost 10
+    pl->add(CProd{4, 3, 10.0}); // 4×3 panel, cost 10
 
     COrder order(4, 3, 1.0);
     CWeldingCompany::seqSolve(pl, order);
@@ -127,7 +123,7 @@ void test_seqSolve_exact_match() {
 //  Test 2 – seqSolve: panel needs splitting (horizontal weld)
 // ============================================================================
 
-void test_seqSolve_single_split() {
+void test_seqSolve_single_split(){
     section("seqSolve – single horizontal split");
 
     // Two 2×4 panels welded together → 4×4 panel
@@ -146,7 +142,7 @@ void test_seqSolve_single_split() {
 //  Test 3 – seqSolve: vertical split
 // ============================================================================
 
-void test_seqSolve_vertical_split() {
+void test_seqSolve_vertical_split(){
     section("seqSolve – single vertical split");
 
     // Two 4×2 panels welded to form 4×4
@@ -165,7 +161,7 @@ void test_seqSolve_vertical_split() {
 //  Test 4 – seqSolve: cheapest path chosen among alternatives
 // ============================================================================
 
-void test_seqSolve_cheapest_path() {
+void test_seqSolve_cheapest_path(){
     section("seqSolve – cheapest path among alternatives");
 
     // Only 3×2 panels available at cost 3.
@@ -185,7 +181,7 @@ void test_seqSolve_cheapest_path() {
 //  Test 5 – seqSolve: panel orientation symmetry
 // ============================================================================
 
-void test_seqSolve_orientation() {
+void test_seqSolve_orientation(){
     section("seqSolve – panel orientation symmetry");
 
     // Price list only has 3×5, but order asks for 5×3 — should still match
@@ -202,7 +198,7 @@ void test_seqSolve_orientation() {
 //  Test 6 – seqSolve: impossible order
 // ============================================================================
 
-void test_seqSolve_impossible() {
+void test_seqSolve_impossible(){
     section("seqSolve – impossible order");
 
     auto pl = std::make_shared<CPriceList>(0);
@@ -220,7 +216,7 @@ void test_seqSolve_impossible() {
 //  Test 7 – seqSolve: multi-level split
 // ============================================================================
 
-void test_seqSolve_multi_level() {
+void test_seqSolve_multi_level(){
     section("seqSolve – multi-level split");
 
     // Build 4×1 from 1×1 panels:  (1+1)+weld + (1+1)+weld  then weld both halves
@@ -232,7 +228,7 @@ void test_seqSolve_multi_level() {
     auto pl = std::make_shared<CPriceList>(0);
     pl->add(CProd{1, 1, 1.0});
 
-    COrder order(4, 1, 0.0);   // zero welding cost → only panel cost matters
+    COrder order(4, 1, 0.0); // zero welding cost → only panel cost matters
     CWeldingCompany::seqSolve(pl, order);
 
     check(approxEq(order.m_Cost, 4.0), "cost == 4.0 (four 1×1 panels, no weld cost)");
@@ -242,7 +238,7 @@ void test_seqSolve_multi_level() {
 //  Test 8 – addPriceList: merge keeps cheapest
 // ============================================================================
 
-void test_price_list_merge() {
+void test_price_list_merge(){
     section("addPriceList – merge keeps cheapest price");
 
     using namespace std::placeholders;
@@ -252,7 +248,7 @@ void test_price_list_merge() {
     pl1->add(CProd{2, 2, 50.0});
 
     APriceList pl2 = std::make_shared<CPriceList>(1);
-    pl2->add(CProd{2, 2, 30.0});   // cheaper for same shape
+    pl2->add(CProd{2, 2, 30.0}); // cheaper for same shape
 
     auto dummyProducer = std::make_shared<SyncProducer>(
         std::bind(&CWeldingCompany::addPriceList, &company, _1, _2),
@@ -274,7 +270,7 @@ void test_price_list_merge() {
 //  Test 9 – concurrent: single customer, sync producer, multiple workers
 // ============================================================================
 
-void test_concurrent_single_customer() {
+void test_concurrent_single_customer(){
     section("concurrent – single customer, sync producer");
 
     using namespace std::placeholders;
@@ -285,11 +281,11 @@ void test_concurrent_single_customer() {
 
     auto prod = std::make_shared<SyncProducer>(
         std::bind(&CWeldingCompany::addPriceList, &company, _1, _2),
-        std::vector<CProd>{ CProd{1, 1, 1.0} }, 0);
+        std::vector<CProd>{CProd{1, 1, 1.0}}, 0);
 
     auto orderList = std::make_shared<COrderList>(0);
     for (int i = 0; i < 10; ++i)
-        orderList->add(COrder{1, 1, 0.0});   // trivial 1×1 orders
+        orderList->add(COrder{1, 1, 0.0}); // trivial 1×1 orders
 
     auto cust = std::make_shared<OneShotCustomer>(orderList);
 
@@ -299,10 +295,13 @@ void test_concurrent_single_customer() {
     company.stop();
 
     check(cust->done(), "customer received completed() callback");
-    if (cust->done()) {
+    if (cust->done()){
         bool allOne = true;
-        for (const auto &o : cust->result()->m_List)
-            if (!approxEq(o.m_Cost, 1.0)) { allOne = false; break; }
+        for (const auto& o : cust->result()->m_List)
+            if (!approxEq(o.m_Cost, 1.0)){
+                allOne = false;
+                break;
+            }
         check(allOne, "all 10 orders priced at 1.0");
     }
 }
@@ -311,23 +310,23 @@ void test_concurrent_single_customer() {
 //  Test 10 – concurrent: multiple customers, multiple producers
 // ============================================================================
 
-void test_concurrent_multi() {
+void test_concurrent_multi(){
     section("concurrent – multiple customers, multiple producers");
 
     using namespace std::placeholders;
     CWeldingCompany company;
 
     // Two producers for material 0
-    auto mkProd = [&](double cost) {
+    auto mkProd = [&](double cost){
         return std::make_shared<SyncProducer>(
             std::bind(&CWeldingCompany::addPriceList, &company, _1, _2),
-            std::vector<CProd>{ CProd{2, 2, cost} }, 0);
+            std::vector<CProd>{CProd{2, 2, cost}}, 0);
     };
     company.addProducer(mkProd(10.0));
-    company.addProducer(mkProd(8.0));   // cheaper; should win after merge
+    company.addProducer(mkProd(8.0)); // cheaper; should win after merge
 
     std::vector<std::shared_ptr<OneShotCustomer>> customers;
-    for (int c = 0; c < 3; ++c) {
+    for (int c = 0; c < 3; ++c){
         auto ol = std::make_shared<COrderList>(0);
         ol->add(COrder{2, 2, 0.0});
         auto cust = std::make_shared<OneShotCustomer>(ol);
@@ -339,11 +338,14 @@ void test_concurrent_multi() {
     company.stop();
 
     bool allDone = true;
-    for (const auto &c : customers) if (!c->done()) { allDone = false; break; }
+    for (const auto& c : customers) if (!c->done()){
+        allDone = false;
+        break;
+    }
     check(allDone, "all 3 customers received completed()");
 
     bool correctPrice = true;
-    for (const auto &c : customers)
+    for (const auto& c : customers)
         if (c->done() && !approxEq(c->result()->m_List[0].m_Cost, 8.0))
             correctPrice = false;
     check(correctPrice, "merged price list: cheapest cost 8.0 used");
@@ -353,7 +355,7 @@ void test_concurrent_multi() {
 //  Test 11 – stress: large number of trivial orders
 // ============================================================================
 
-void test_stress_many_orders() {
+void test_stress_many_orders(){
     section("stress – 500 trivial orders, 8 workers");
 
     using namespace std::placeholders;
@@ -361,7 +363,7 @@ void test_stress_many_orders() {
 
     auto prod = std::make_shared<SyncProducer>(
         std::bind(&CWeldingCompany::addPriceList, &company, _1, _2),
-        std::vector<CProd>{ CProd{1, 1, 2.5} }, 7);
+        std::vector<CProd>{CProd{1, 1, 2.5}}, 7);
 
     company.addProducer(prod);
 
@@ -375,11 +377,134 @@ void test_stress_many_orders() {
     company.stop();
 
     check(cust->done(), "customer notified after 500 orders");
-    if (cust->done()) {
+    if (cust->done()){
         bool ok = true;
-        for (const auto &o : cust->result()->m_List)
-            if (!approxEq(o.m_Cost, 2.5)) { ok = false; break; }
+        for (const auto& o : cust->result()->m_List)
+            if (!approxEq(o.m_Cost, 2.5)){
+                ok = false;
+                break;
+            }
         check(ok, "all 500 orders correctly priced at 2.5");
+    }
+}
+
+
+// ============================================================================
+//  Test 12 - regression: a catalogue price is not automatically the answer
+// ============================================================================
+
+void test_seqSolve_welding_beats_buying(){
+    section("seqSolve - welding can beat buying the exact size");
+
+    // 4x4 is on sale for 100, but two 2x4 panels at 5 plus one seam
+    // (height 4 * strength 0.5 = 2.0) come to 12.
+    auto pl = std::make_shared<CPriceList>(0);
+    pl->add(CProd{2, 4, 5.0});
+    pl->add(CProd{4, 4, 100.0});
+
+    COrder order(4, 4, 0.5);
+    CWeldingCompany::seqSolve(pl, order);
+
+    check(approxEq(order.m_Cost, 12.0), "cost == 12.0 (weld, do not buy the 4x4)");
+}
+
+// ============================================================================
+//  Test 13 - regression: an empty order list still gets its callback
+// ============================================================================
+
+void test_empty_order_list(){
+    section("concurrent - empty order list still calls completed()");
+
+    using namespace std::placeholders;
+    CWeldingCompany company;
+
+    auto prod = std::make_shared<SyncProducer>(
+        std::bind(&CWeldingCompany::addPriceList, &company, _1, _2),
+        std::vector<CProd>{CProd{1, 1, 1.0}}, 0);
+
+    auto empty = std::make_shared<COrderList>(0); // no orders at all
+    auto cust = std::make_shared<OneShotCustomer>(empty);
+
+    company.addProducer(prod);
+    company.addCustomer(cust);
+    company.start(2);
+    company.stop();
+
+    check(cust->done(), "customer notified for an empty batch");
+}
+
+// ============================================================================
+//  Test 14 - regression: an unsolicited price list must not deadlock
+// ============================================================================
+
+void test_unsolicited_price_list(){
+    section("concurrent - unsolicited price list does not deadlock");
+
+    using namespace std::placeholders;
+    CWeldingCompany company;
+
+    auto mk = [&]{
+        return std::make_shared<SyncProducer>(
+            std::bind(&CWeldingCompany::addPriceList, &company, _1, _2),
+            std::vector<CProd>{CProd{1, 1, 1.0}}, 1);
+    };
+    auto p1 = mk();
+    company.addProducer(p1);
+    company.addProducer(mk());
+
+    // Nobody asked for this one - mirrors CProducerAsync, which ignores the
+    // requested materialID and answers with IDs of its own choosing.
+    auto stray = std::make_shared<CPriceList>(1);
+    stray->add(CProd{1, 1, 9.0});
+    company.addPriceList(p1, stray);
+
+    auto ol = std::make_shared<COrderList>(1);
+    ol->add(COrder{1, 1, 0.0});
+    auto cust = std::make_shared<OneShotCustomer>(ol);
+    company.addCustomer(cust);
+
+    company.start(2);
+    company.stop(); // hung forever before the m_requestedMaterials fix
+
+    check(cust->done(), "stop() returned, customer notified");
+    if (cust->done())
+        check(approxEq(cust->result()->m_List[0].m_Cost, 1.0),
+              "cheapest of solicited and unsolicited prices used");
+}
+
+// ============================================================================
+//  Test 15 - backpressure: far more orders than the queue can hold
+// ============================================================================
+
+void test_backpressure(){
+    section("backpressure - 1000 orders through a 150-slot queue, 2 workers");
+
+    using namespace std::placeholders;
+    CWeldingCompany company;
+
+    auto prod = std::make_shared<SyncProducer>(
+        std::bind(&CWeldingCompany::addPriceList, &company, _1, _2),
+        std::vector<CProd>{CProd{1, 1, 1.0}}, 3);
+    company.addProducer(prod);
+
+    auto ol = std::make_shared<COrderList>(3);
+    for (int i = 0; i < 1000; ++i) ol->add(COrder{1, 1, 0.0});
+
+    auto cust = std::make_shared<OneShotCustomer>(ol);
+    company.addCustomer(cust);
+
+    company.start(2); // deliberately fewer workers than the producer needs
+    company.stop();
+
+    check(cust->done(), "all 1000 orders drained without losing any");
+    if (cust->done()){
+        bool ok = cust->result()->m_List.size() == 1000;
+        for (const auto& o : cust->result()->m_List)
+            if (!approxEq(o.m_Cost, 1.0)){
+                ok = false;
+                break;
+            }
+        check(ok, "every order priced at 1.0");
     }
 }
 
@@ -387,7 +512,7 @@ void test_stress_many_orders() {
 //  main
 // ============================================================================
 
-int main() {
+int main(){
     std::cout << "CWeldingCompany – Test Suite\n";
     std::cout << std::string(50, '=') << "\n";
 
@@ -402,6 +527,10 @@ int main() {
     test_concurrent_single_customer();
     test_concurrent_multi();
     test_stress_many_orders();
+    test_seqSolve_welding_beats_buying();
+    test_empty_order_list();
+    test_unsolicited_price_list();
+    test_backpressure();
 
     std::cout << "\n" << std::string(50, '=') << "\n";
     std::cout << "Results: " << g_passed << " / " << g_total << " tests passed.\n";

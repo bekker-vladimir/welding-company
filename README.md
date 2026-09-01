@@ -10,7 +10,7 @@ A multithreaded C++ system that receives panel orders from customers, queries pr
 - **Concurrent Order Processing:** A configurable worker-thread pool processes orders in parallel, maximising CPU utilisation across large order batches.
 - **Optimal DP Solver:** A recursive memoised solver finds the minimum-cost panel assembly by exploring all horizontal and vertical split combinations.
 - **Price-List Merging:** When multiple producers supply the same material, price lists are merged automatically — always keeping the cheapest price per panel shape.
-- **Backpressure Control:** A bounded order queue (configurable `kMaxQueueSize`) prevents memory runaway when producers outpace workers.
+- **Backpressure Control:** A bounded order queue built on `std::counting_semaphore<kMaxQueueSize>` — serving threads acquire a slot before pushing, workers release one after popping, so a fast producer blocks instead of exhausting memory.
 - **Clean Shutdown:** `stop()` drains all in-flight orders, notifies every customer, and joins every thread before returning.
 
 ---
@@ -45,13 +45,18 @@ Given a set of available panels `{(w, h, cost)}` and a welding cost per unit len
 
 ```
 solve(W, H) = min(
-  direct_cost(W, H),                                          // exact panel from price list
+  direct_cost(W, H),                                                // buy the panel outright
   min over x in [1, W/2]:  solve(x, H) + solve(W-x, H) + H × weld,   // horizontal split
-  min over y in [1, H/2]:  solve(W, x) + solve(W, H-y) + W × weld    // vertical split
+  min over y in [1, H/2]:  solve(W, y) + solve(W, H-y) + W × weld    // vertical split
 )
 ```
 
-Results are cached in a `dp[w][h]` map to avoid recomputation. Panel orientations are treated as equivalent (a `3×5` panel satisfies a `5×3` order).
+Two points that are easy to get wrong:
+
+- **A catalogue price is an opening bid, not an answer.** Even when `W×H` is on the price list, welding it from cheaper pieces may cost less, so the direct price seeds the minimum instead of short-circuiting the search. The cache therefore keeps catalogue prices (`direct`) apart from fully solved sizes (`solved`).
+- **Orientation is symmetric.** Cache keys are normalised to `w ≤ h`, so `3×5` and `5×3` share one entry. This roughly halves both the state space and the runtime.
+
+Splits are enumerated only up to the midpoint, since `(x, W-x)` and `(W-x, x)` are the same cut. Complexity is `O(W·H·(W+H))` states-times-transitions; recursion terminates because `w + h` strictly decreases on every call.
 
 ---
 
@@ -116,11 +121,23 @@ The test suite (`tests/test_welding.cpp`) covers:
 | 9 | Integration | Single customer, sync producer, 4 workers |
 | 10 | Integration | Multiple customers + producers, price merge |
 | 11 | Stress | 500 trivial orders, 8 workers |
+| 12 | Regression | Welding beats buying the exact size |
+| 13 | Regression | Empty order list still triggers `completed()` |
+| 14 | Regression | Unsolicited price list does not deadlock |
+| 15 | Backpressure | 1000 orders through a 150-slot queue, 2 workers |
+
+Verified clean under `-fsanitize=thread` and `-fsanitize=address,undefined`.
 
 ---
 
 ## Requirements
 
-- C++20 (`std::atomic`, `std::counting_semaphore` headers, concepts)
+- C++20 — `std::counting_semaphore` (`<semaphore>`), `std::atomic`, init-statements in `if`
 - CMake 3.16+
 - POSIX Threads (Linux / macOS) or Win32 Threads (MSVC)
+
+## Notes
+
+`CWeldingCompany` is single-use: after `stop()` the instance must not be started
+again. The destructor joins any threads still running, so a missed `stop()`
+cannot make `~std::thread` call `std::terminate()`. Copying is disabled.
